@@ -1,0 +1,408 @@
+//@version=5
+// ─────────────────────────────────────────────────────────────────────────────
+// SHA + Kalman Trading-System
+//
+// Kombiniert zwei Indikatoren in einem Skript und ergänzt die Checkliste:
+//   * "Smoothed Heiken Ashi Candles" (Richtung)
+//   * "Adaptive Kalman filter - Trend Strength Oscillator" © Zeiierman (Filter)
+//   * Tagesfilter (letzte ABGESCHLOSSENE Tageskerze, kein Repainting)
+//   * Live-Checkliste, Stop, Positionsgröße und Hebel
+//   * Auswertung aller bisherigen Signale inkl. Spread und simuliertem Konto
+//
+// Lizenz: CC BY-NC-SA 4.0  https://creativecommons.org/licenses/by-nc-sa/4.0/
+// Der Kalman-Teil ist von Zeiiermans Skript abgeleitet und steht unter
+// derselben Lizenz. Die Matrixrechnung des Originals ist hier in
+// Einzelformeln ausgeschrieben (mathematisch identisch, Werte wie im Original).
+// ─────────────────────────────────────────────────────────────────────────────
+indicator("SHA + Kalman Trading-System", shorttitle = "SHA+Kalman", overlay = false, precision = 0, max_labels_count = 500)
+
+// ═════════════════════════════ Einstellungen ═════════════════════════════
+grpS      = "Smoothed Heikin Ashi"
+shaLen1   = input.int(10, "Smoothing Length 1", minval = 1, group = grpS)
+shaLen2   = input.int(10, "Smoothing Length 2", minval = 1, group = grpS)
+avgLen    = input.int(50, "Candle Size MA Length", minval = 1, group = grpS)
+smallMult = input.float(0.5, "Small Candle Size Multiplier", group = grpS)
+largeMult = input.float(1.5, "Large Candle Size Multiplier", group = grpS)
+showSHA   = input.bool(true, "SHA-Kerzen anzeigen", group = grpS)
+
+grpK      = "Kalman Trend Strength"
+measNoise = input.float(500.0, "Measurement Noise", minval = 0.0, maxval = 10000, step = 2.0, group = grpK)
+oscSmooth = input.int(10, "Osc Smoothness", minval = 2, group = grpK)
+kModel    = input.string("Standard", "Kalman Filter Model", options = ["Standard", "Volume adjusted", "Parkinson adjusted"], group = grpK)
+trendLook = input.int(10, "Trend Lookback", minval = 2, group = grpK)
+strSmooth = input.int(10, "Strength Smoothness", minval = 2, group = grpK)
+showKLine = input.bool(false, "Kalman-Linie im Chart anzeigen", group = grpK)
+posCol    = input.color(color.lime, "Farben", inline = "c", group = grpK)
+neuCol    = input.color(color.blue, "", inline = "c", group = grpK)
+negCol    = input.color(color.red, "", inline = "c", group = grpK)
+
+grpF       = "Checkliste: Filter"
+useFilter  = input.bool(true, "Tagesfilter verwenden", group = grpF)
+filterTF   = input.timeframe("D", "Filter-Zeitebene", group = grpF)
+useSess    = input.bool(false, "Nur zu bestimmten Uhrzeiten handeln", group = grpF)
+sessStr    = input.session("0900-2200", "Uhrzeit (Berlin)", group = grpF)
+maxLossDay = input.int(2, "Max. Verlusttrades pro Tag", minval = 1, group = grpF)
+
+grpR     = "Checkliste: Risiko & Stop"
+account  = input.float(575, "Aktueller Kontostand (€)", minval = 1, group = grpR)
+riskPct  = input.float(5, "Risiko pro Trade (%)", minval = 0.1, maxval = 50, step = 0.5, group = grpR)
+eurusd   = input.float(1.12, "EUR/USD", minval = 0.5, step = 0.01, group = grpR)
+swingLen = input.int(10, "Stop hinter Hoch/Tief der letzten N Kerzen", minval = 2, group = grpR)
+stopBuf  = input.float(2.0, "Stop-Puffer (USD)", minval = 0, group = grpR)
+minQty   = input.float(0.01, "Mindestgröße beim Broker (Unzen)", minval = 0.001, group = grpR)
+qtyStep  = input.float(0.01, "Größenschritt (Unzen)", minval = 0.001, group = grpR)
+spread   = input.float(0.4, "Spread (USD) für die Auswertung", minval = 0, step = 0.1, group = grpR)
+pauseBal = input.float(400, "Pause unter Kontostand (€)", minval = 0, group = grpR)
+
+grpT      = "Anzeige: Tabelle (oben rechts)"
+showList  = input.bool(true, "Checkliste anzeigen", group = grpT)
+showStats = input.bool(true, "Auswertung anzeigen", group = grpT)
+tblSize   = input.string("Groß", "Schriftgröße", options = ["Klein", "Normal", "Groß", "Sehr groß"], group = grpT)
+
+grpC      = "Anzeige: Chart"
+sigStyle  = input.string("Klein", "Einstiegssignale", options = ["Klein", "Ausführlich", "Aus"], group = grpC, tooltip = "Klein: Dreieck, Details beim Antippen/Darüberfahren. Ausführlich: Kasten mit allen Werten.")
+showExits = input.bool(false, "Ausstiege markieren", group = grpC)
+showStop  = input.bool(false, "Stop-Linie anzeigen", group = grpC)
+
+NEUTRAL = 10.0   // unter diesem Betrag ist die Trendstärke "blau"
+
+// ═════════════════════════════ Funktionen ═════════════════════════════
+// Smoothed Heikin Ashi, identisch zu "Smoothed Heiken Ashi Candles"
+f_sha(int len1, int len2) =>
+    float o = ta.ema(open, len1)
+    float c = ta.ema(close, len1)
+    float h = ta.ema(high, len1)
+    float l = ta.ema(low, len1)
+    float haclose = (o + h + l + c) / 4
+    var float haopen = na
+    haopen := na(haopen[1]) ? (o + c) / 2 : (haopen[1] + haclose[1]) / 2
+    float hahigh = math.max(h, math.max(haopen, haclose))
+    float halow  = math.min(l, math.min(haopen, haclose))
+    [ta.ema(haopen, len2), ta.ema(hahigh, len2), ta.ema(halow, len2), ta.ema(haclose, len2)]
+
+// Kalman Trend Strength, identisch zu Zeiiermans Skript (Standardwerte:
+// Process Noise 1 und 2 = 0.01, F = [[1,1],[1,0]], H = [1,0]).
+// Rückgabe: [Filterlinie, innere Trendstärke (Farbe), angezeigte Oszillatorlinie]
+f_kalman(float src, float mNoise, string model, int n2, int r2, int r1) =>
+    float q1 = 0.01
+    float q2 = 0.01
+    var float x0  = na
+    var float x1  = na
+    var float p00 = 1.0
+    var float p01 = 0.0
+    var float p10 = 0.0
+    var float p11 = 1.0
+    if na(x0)
+        x0 := src
+        x1 := src
+    // Vorhersage
+    float px0 = x0 + x1
+    float a00 = p00 + p01 + p10 + p11 + q1
+    float a01 = p00 + p10 + q1 * q2
+    float a10 = p00 + p01 + q1 * q2
+    float a11 = p00 + q2
+    // Messrauschen je nach Modell
+    float r = mNoise
+    if model != "Standard" and bar_index > 2
+        if model == "Volume adjusted"
+            r := mNoise * volume[1] / math.min(volume[1], volume)
+        else
+            r := mNoise * (1 + (high - low) / math.max(high[1] - low[1], syminfo.mintick))
+    // Korrektur
+    float s   = a00 + r
+    float k0  = a00 / s
+    float k1  = a10 / s
+    float inn = src - px0
+    x0  := px0 + k0 * inn
+    x1  := k1 * inn
+    p00 := (1 - k0) * a00
+    p01 := (1 - k0) * a01
+    p10 := a10 - k1 * a00
+    p11 := a11 - k1 * a01
+    // Trendstärke: normiert auf das Betragsmaximum der letzten n2 Werte
+    float A  = ta.highest(math.abs(x1), n2)
+    float ts = ta.wma(x1 / A * 100, r2)
+    [x0, ts, ta.wma(ts, r1)]
+
+// Werte der letzten ABGESCHLOSSENEN Kerze der Filter-Zeitebene
+f_filter() =>
+    [fo, fh, fl, fc] = f_sha(shaLen1, shaLen2)
+    [fEst, fTs, fOsc] = f_kalman(close, measNoise, kModel, trendLook, strSmooth, oscSmooth)
+    bool fBull    = not (fo > fc)
+    bool fNeutral = na(fTs) or math.abs(fTs) < NEUTRAL
+    [fBull[1], fOsc[1], fNeutral[1]]
+
+// Farbverlauf wie im Original
+f_oscColor(float ts) =>
+    color col = neuCol
+    if not na(ts)
+        int filled = int(math.floor(math.abs(ts) / 10))
+        if filled > 0
+            col := color.new(ts > 0 ? posCol : negCol, math.max(0, 80 - (math.min(filled, 10) - 1) * 10))
+    col
+
+f_qty(float dist, float riskE) =>
+    dist > 0 ? math.floor(riskE / (dist / eurusd) / qtyStep + 1e-9) * qtyStep : 0.0
+
+f_mark(bool ok) =>
+    ok ? "✓" : "✗"
+
+f_size(string s) =>
+    switch s
+        "Klein"     => size.small
+        "Groß"      => size.large
+        "Sehr groß" => size.huge
+        => size.normal
+
+// Einstiegsmarkierung: klein (Dreieck mit Details als Tooltip) oder ausführlich
+f_entryMark(bool isLong, string txt) =>
+    if sigStyle == "Klein"
+        label.new(bar_index, isLong ? low : high, "", style = isLong ? label.style_triangleup : label.style_triangledown, yloc = isLong ? yloc.belowbar : yloc.abovebar, color = isLong ? color.green : color.red, size = size.small, tooltip = txt, force_overlay = true)
+    else if sigStyle == "Ausführlich"
+        label.new(bar_index, isLong ? low : high, txt, style = isLong ? label.style_label_up : label.style_label_down, color = isLong ? color.green : color.red, textcolor = color.white, size = size.small, force_overlay = true)
+
+// ═════════════════════════════ Berechnung ═════════════════════════════
+[shaO, shaH, shaL, shaC] = f_sha(shaLen1, shaLen2)
+[kEst, ts, osc] = f_kalman(close, measNoise, kModel, trendLook, strSmooth, oscSmooth)
+[dBull, dOsc, dNeutral] = request.security(syminfo.tickerid, filterTF, f_filter(), lookahead = barmerge.lookahead_on)
+
+bool  shaBull = not (shaO > shaC)
+bool  neutral = na(ts) or math.abs(ts) < NEUTRAL
+float swingLo = ta.lowest(low, swingLen)
+float swingHi = ta.highest(high, swingLen)
+
+// 1. Tagesfilter: SHA-Farbe + Oszillator-Seite + nicht blau
+bool dLong  = not useFilter or (dBull and dOsc > 0 and not dNeutral)
+bool dShort = not useFilter or (not dBull and dOsc < 0 and not dNeutral)
+
+// 2.-4. Signal auf der Chart-Zeitebene: Farbe passt, Oszillator auf der
+// richtigen Seite, nicht blau und in Trendrichtung laufend. Ausgelöst wird,
+// sobald diese Kombination neu entsteht.
+bool longSetup  = shaBull and osc > 0 and not neutral
+bool shortSetup = not shaBull and osc < 0 and not neutral
+bool longTrig   = longSetup and not longSetup[1] and osc > osc[1]
+bool shortTrig  = shortSetup and not shortSetup[1] and osc < osc[1]
+
+// 5. Uhrzeit
+bool inSess = not useSess or not na(time(timeframe.period, sessStr, "Europe/Berlin"))
+
+// ═════════════════════════════ Trades & Auswertung ═════════════════════════════
+var int   pos         = 0
+var float entryPx     = na
+var float stopPx      = na
+var float riskUsd     = na
+var float simRiskEur  = na
+var float simBal      = account
+var float simMin      = account
+var float pauseTime   = na
+var int   nTrades     = 0
+var int   nWins       = 0
+var float sumR        = 0.0
+var float sumWinR     = 0.0
+var float sumLossR    = 0.0
+var int   lossStreak  = 0
+var int   maxStreak   = 0
+var int   curDay      = 0
+var int   lossesToday = 0
+
+// 6. Verlusttrades pro Tag (Berliner Kalendertag)
+int dayKey = year(time, "Europe/Berlin") * 10000 + month(time, "Europe/Berlin") * 100 + dayofmonth(time, "Europe/Berlin")
+if dayKey != curDay
+    curDay      := dayKey
+    lossesToday := 0
+
+bool  confirmed = barstate.isconfirmed
+bool  exitNow   = false
+float exitPx    = na
+string exitWhy  = ""
+
+// Ausstieg: Stop (auch bei Kurslücke), SHA-Farbwechsel oder Oszillator über die Null
+if confirmed and pos == 1
+    if low <= stopPx
+        exitPx  := math.min(open, stopPx)
+        exitWhy := "Stop"
+        exitNow := true
+    else if not shaBull or osc < 0
+        exitPx  := close
+        exitWhy := not shaBull ? "SHA rot" : "Osz < 0"
+        exitNow := true
+
+if confirmed and pos == -1
+    if high >= stopPx
+        exitPx  := math.max(open, stopPx)
+        exitWhy := "Stop"
+        exitNow := true
+    else if shaBull or osc > 0
+        exitPx  := close
+        exitWhy := shaBull ? "SHA grün" : "Osz > 0"
+        exitNow := true
+
+if exitNow
+    float rRes = ((pos == 1 ? exitPx - entryPx : entryPx - exitPx) - spread) / riskUsd
+    nTrades += 1
+    sumR    += rRes
+    if rRes > 0
+        nWins      += 1
+        sumWinR    += rRes
+        lossStreak := 0
+    else
+        sumLossR    += rRes
+        lossStreak  += 1
+        lossesToday += 1
+        maxStreak   := math.max(maxStreak, lossStreak)
+    simBal += rRes * simRiskEur
+    simMin := math.min(simMin, simBal)
+    if na(pauseTime) and simBal < pauseBal
+        pauseTime := time
+    if showExits
+        string rTxt = (rRes >= 0 ? "+" : "") + str.tostring(rRes, "0.00") + " R"
+        label.new(bar_index, pos == 1 ? high : low, "✕", style = label.style_none, yloc = pos == 1 ? yloc.abovebar : yloc.belowbar, textcolor = rRes >= 0 ? color.green : color.gray, size = size.small, tooltip = "Ausstieg: " + exitWhy + "\n" + rTxt, force_overlay = true)
+    pos     := 0
+    entryPx := na
+    stopPx  := na
+    riskUsd := na
+
+// Einstieg
+float riskEur     = account * riskPct / 100
+bool  canTrade    = inSess and lossesToday < maxLossDay
+bool  longSignal  = false
+bool  shortSignal = false
+
+f_entryText(string side, float st, float dist, float qty) =>
+    side + "\nEinstieg " + str.tostring(close, "0.00") + "\nStop " + str.tostring(st, "0.00") + " (" + str.tostring(dist, "0.0") + " USD)\nGröße " + str.tostring(qty, "0.00") + " oz · Hebel " + str.tostring(qty * close / eurusd / account, "0.0") + "×\nRisiko " + str.tostring(qty * dist / eurusd, "0.00") + " €"
+
+if confirmed and pos == 0 and longTrig and dLong and canTrade
+    float st   = swingLo - stopBuf
+    float dist = close - st
+    float qty  = f_qty(dist, riskEur)
+    if qty >= minQty
+        longSignal := true
+        pos        := 1
+        entryPx    := close
+        stopPx     := st
+        riskUsd    := dist
+        simRiskEur := simBal * riskPct / 100
+        string txt = f_entryText("LONG", st, dist, qty)
+        f_entryMark(true, txt)
+        alert(syminfo.ticker + " " + txt, alert.freq_once_per_bar_close)
+
+if confirmed and pos == 0 and shortTrig and dShort and canTrade
+    float st   = swingHi + stopBuf
+    float dist = st - close
+    float qty  = f_qty(dist, riskEur)
+    if qty >= minQty
+        shortSignal := true
+        pos         := -1
+        entryPx     := close
+        stopPx      := st
+        riskUsd     := dist
+        simRiskEur  := simBal * riskPct / 100
+        string txt = f_entryText("SHORT", st, dist, qty)
+        f_entryMark(false, txt)
+        alert(syminfo.ticker + " " + txt, alert.freq_once_per_bar_close)
+
+// ═════════════════════════════ Darstellung ═════════════════════════════
+color oscColor = f_oscColor(ts)
+
+// Hauptchart: SHA-Kerzen (Helligkeit nach Kerzengröße wie im Original), Kalman-Linie, Stop
+float candleSize = math.abs(shaC - shaO)
+float avgSize    = ta.sma(candleSize, avgLen)
+float normSize   = math.min(math.max((candleSize - avgSize * smallMult) / (avgSize * (largeMult - smallMult)), 0), 1)
+color shaCol     = color.new(shaO > shaC ? color.red : color.lime, 100 * (1 - normSize))
+plotcandle(showSHA ? shaO : na, showSHA ? shaH : na, showSHA ? shaL : na, showSHA ? shaC : na, title = "Heikin Smoothed", color = shaCol, force_overlay = true)
+plot(showKLine ? kEst : na, "Adaptive Kalman Filter", color = oscColor, linewidth = 2, force_overlay = true)
+plot(showStop and pos != 0 ? stopPx : na, "Stop", color = color.orange, style = plot.style_linebr, linewidth = 2, force_overlay = true)
+
+// Oszillator-Fenster wie im Original, Hintergrund zeigt den Tagesfilter
+oscPlot = plot(osc, "Kalman Trend Strength Oscillator", color = oscColor, linewidth = 3)
+upperBand = hline(70, "70")
+hline(0, "0")
+lowerBand = hline(-70, "-70")
+fill(upperBand, lowerBand, color = color.rgb(87, 130, 194, 90), title = "Background Fill")
+midLinePlot = plot(0, color = na, editable = false, display = display.none)
+fill(oscPlot, midLinePlot, 80, 30, top_color = color.new(color.green, 0), bottom_color = color.new(color.green, 100), title = "Upper Gradient Fill")
+fill(oscPlot, midLinePlot, -30, -80, top_color = color.new(color.red, 100), bottom_color = color.new(color.red, 0), title = "Lower Gradient Fill")
+bgcolor(useFilter and dLong ? color.new(color.green, 92) : useFilter and dShort ? color.new(color.red, 92) : na, title = "Tagesfilter")
+
+// ═════════════════════════════ Checkliste & Auswertung ═════════════════════════════
+// Eine Tabelle fest oben rechts: Checkliste (Zeilen 0-8), darunter die Auswertung.
+var table tbl = table.new(position.top_right, 2, 17, bgcolor = color.new(chart.bg_color, 8), frame_color = color.new(chart.fg_color, 70), frame_width = 1, border_width = 1, border_color = color.new(chart.fg_color, 88), force_overlay = true)
+
+f_row(table t, int row, string a, string b, color cb, string sz) =>
+    table.cell(t, 0, row, a, text_color = chart.fg_color, text_size = sz, text_halign = text.align_left)
+    table.cell(t, 1, row, b, text_color = cb, text_size = sz, text_halign = text.align_right)
+
+f_head(table t, int row, string a, string sz, color bg) =>
+    table.cell(t, 0, row, a, text_color = chart.fg_color, text_size = sz, text_halign = text.align_left, bgcolor = bg)
+    table.cell(t, 1, row, "", text_size = sz, bgcolor = bg)
+
+if barstate.islast
+    color okC  = color.new(color.green, 0)
+    color badC = color.new(color.red, 0)
+    string sz  = f_size(tblSize)
+    int    row = 0
+
+    if showList
+        int  dir = useFilter ? (dLong ? 1 : dShort ? -1 : 0) : (shaBull ? 1 : -1)
+        bool c1  = dir != 0
+        bool c2  = dir == 1 ? shaBull : dir == -1 ? not shaBull : false
+        bool c3  = dir == 1 ? osc > 0 and not neutral : dir == -1 ? osc < 0 and not neutral : false
+        bool c4  = dir == 1 ? osc > osc[1] : dir == -1 ? osc < osc[1] : false
+        bool c5  = inSess
+        bool c6  = lossesToday < maxLossDay
+        float st   = dir == 1 ? swingLo - stopBuf : swingHi + stopBuf
+        float dist = math.abs(close - st)
+        float qty  = f_qty(dist, riskEur)
+        bool c7  = c1 and qty >= minQty
+        bool fresh = dir == 1 ? longTrig : dir == -1 ? shortTrig : false
+        bool allOk = c1 and c2 and c3 and c4 and c5 and c6 and c7
+
+        string res   = pos != 0 ? "Position offen · Stop " + str.tostring(stopPx, "0.00") : allOk and fresh ? "SIGNAL " + (dir == 1 ? "LONG" : "SHORT") : allOk ? "erfüllt · warte auf Wechsel" : "warten"
+        color  resBg = pos != 0 ? color.new(color.orange, 70) : allOk and fresh ? color.new(dir == 1 ? color.green : color.red, 60) : color.new(chart.fg_color, 88)
+        string dirTxt = dir == 1 ? "Long" : dir == -1 ? "Short" : "–"
+
+        f_head(tbl, row, "Checkliste " + dirTxt + (confirmed ? "" : " · Kerze läuft"), sz, color.new(chart.fg_color, 88))
+        row += 1
+        f_row(tbl, row, "1  Tagesfilter (" + str.tostring(dOsc, "0") + ")", f_mark(c1) + (useFilter ? (dir == 1 ? " nur Long" : dir == -1 ? " nur Short" : " kein Trade") : " aus"), c1 ? okC : badC, sz)
+        row += 1
+        f_row(tbl, row, "2  SHA-Farbe", f_mark(c2) + (shaBull ? " grün" : " rot"), c2 ? okC : badC, sz)
+        row += 1
+        f_row(tbl, row, "3  Oszillator-Seite", f_mark(c3) + " " + str.tostring(osc, "0") + (neutral ? " blau" : ""), c3 ? okC : badC, sz)
+        row += 1
+        f_row(tbl, row, "4  Oszillator-Richtung", f_mark(c4) + (osc > osc[1] ? " steigt" : " fällt"), c4 ? okC : badC, sz)
+        row += 1
+        f_row(tbl, row, "5  Uhrzeit", f_mark(c5) + (useSess ? "" : " (aus)"), c5 ? okC : badC, sz)
+        row += 1
+        f_row(tbl, row, "6  Verluste heute", f_mark(c6) + " " + str.tostring(lossesToday) + "/" + str.tostring(maxLossDay), c6 ? okC : badC, sz)
+        row += 1
+        f_row(tbl, row, "7  Größe (Stop " + str.tostring(dist, "0.0") + " USD)", c1 ? f_mark(c7) + " " + str.tostring(qty, "0.00") + " oz" : "–", c7 ? okC : badC, sz)
+        row += 1
+        table.cell(tbl, 0, row, "→  Ergebnis", text_color = chart.fg_color, text_size = sz, text_halign = text.align_left, bgcolor = resBg)
+        table.cell(tbl, 1, row, res, text_color = chart.fg_color, text_size = sz, text_halign = text.align_right, bgcolor = resBg)
+        row += 1
+
+    if showStats
+        int nLoss = nTrades - nWins
+        f_head(tbl, row, "Auswertung · " + str.tostring(spread, "0.0") + " USD Spread", sz, color.new(chart.fg_color, 88))
+        row += 1
+        f_row(tbl, row, "Trades", str.tostring(nTrades), chart.fg_color, sz)
+        row += 1
+        f_row(tbl, row, "Trefferquote", nTrades > 0 ? str.tostring(100.0 * nWins / nTrades, "0") + " %" : "–", chart.fg_color, sz)
+        row += 1
+        f_row(tbl, row, "Ø R pro Trade", nTrades > 0 ? str.tostring(sumR / nTrades, "0.00") : "–", sumR >= 0 ? okC : badC, sz)
+        row += 1
+        f_row(tbl, row, "Ø Gewinn | Ø Verlust", (nWins > 0 ? "+" + str.tostring(sumWinR / nWins, "0.00") : "–") + " | " + (nLoss > 0 ? str.tostring(sumLossR / nLoss, "0.00") : "–") + " R", chart.fg_color, sz)
+        row += 1
+        f_row(tbl, row, "Längste Verlustserie", str.tostring(maxStreak), chart.fg_color, sz)
+        row += 1
+        f_row(tbl, row, "Sim. Konto (Start " + str.tostring(account, "0") + " €)", str.tostring(simBal, "0") + " €", simBal >= account ? okC : badC, sz)
+        row += 1
+        f_row(tbl, row, "Tiefster Stand", str.tostring(simMin, "0") + " €" + (na(pauseTime) ? "" : " · Pause ab " + str.format_time(int(pauseTime), "dd.MM.yy", "Europe/Berlin")), na(pauseTime) ? chart.fg_color : badC, sz)
+        row += 1
+
+// ═════════════════════════════ Alarme ═════════════════════════════
+// Hinweis: Alarme auf Indikatoren gibt es bei TradingView erst ab dem
+// Essential-Plan. Im kostenlosen Plan übernimmt das der Python-Bot.
+alertcondition(longSignal, "Long-Signal", "SHA+Kalman: LONG-Signal auf {{ticker}} bei {{close}}")
+alertcondition(shortSignal, "Short-Signal", "SHA+Kalman: SHORT-Signal auf {{ticker}} bei {{close}}")
+alertcondition(exitNow, "Ausstieg", "SHA+Kalman: Ausstiegssignal auf {{ticker}} bei {{close}}")
