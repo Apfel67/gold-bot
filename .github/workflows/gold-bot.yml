@@ -1,5 +1,5 @@
 name: gold-bot
-
+ 
 on:
   schedule:
     - cron: "3 * * * 0-5"
@@ -10,28 +10,28 @@ on:
         type: choice
         default: run
         options: [run, status, test-push, resume, backtest]
-
+ 
 permissions:
   contents: write
-
+ 
 concurrency:
   group: gold-bot
   cancel-in-progress: false
-
+ 
 jobs:
   bot:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+ 
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
-
+ 
       - run: pip install -r requirements.txt
-
+ 
       - name: Bot ausführen
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
@@ -44,14 +44,14 @@ jobs:
             resume)    python bot.py --resume ;;
             backtest)  python bot.py --backtest --out backtest_trades.csv ;;
           esac
-
+ 
       - name: Backtest-Ergebnis bereitstellen
         if: github.event.inputs.mode == 'backtest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: backtest_trades
           path: backtest_trades.csv
-
+ 
       - name: Zustand speichern
         if: always()
         run: |
