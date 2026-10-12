@@ -1,0 +1,20 @@
+{
+  "last_bar": "2026-10-12T10:00:00-04:00",
+  "broker": {
+    "balance": 575.0,
+    "position": null,
+    "eurusd": 1.116071343421936
+  },
+  "engine": {
+    "day": "",
+    "losses_today": 0,
+    "paused": false,
+    "trades": 0,
+    "wins": 0,
+    "sum_r": 0.0,
+    "loss_streak": 0,
+    "max_streak": 0,
+    "min_balance": 575.0
+  },
+  "updated": "2026-10-12T15:51:10.207973+00:00"
+}
