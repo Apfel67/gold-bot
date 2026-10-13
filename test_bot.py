@@ -256,3 +256,50 @@ def test_csv_mode_and_status(tmp_path, market, monkeypatch, capsys):
     assert "Konto" in capsys.readouterr().out
     assert bot.main(["--backtest", "--h1-csv", str(csv), "--out", str(tmp_path / "bt.csv")]) == 0
     assert (tmp_path / "bt.csv").exists()
+
+
+# ───────────────────────── Robustheit ─────────────────────────
+
+def test_robustness_mode(tmp_path, market, monkeypatch, capsys):
+    import data
+    from strategy import daily_from_hourly
+
+    def fake_download(symbol, interval, period, tries=3):
+        h = make_market(4000, seed=abs(hash(symbol)) % 1000)
+        if symbol == "EURUSD=X":       # anderer Preisbereich
+            h[["open", "high", "low", "close"]] = h[["open", "high", "low", "close"]] / 3600
+        return h if interval == "60m" else daily_from_hourly(h)
+
+    monkeypatch.setattr(data, "_download", fake_download)
+    monkeypatch.setattr(data, "drop_unfinished", lambda h1, now=None: h1)
+    out = tmp_path / "rob.csv"
+    assert bot.main(["--robustness", "--out", str(out)]) == 0
+    table = pd.read_csv(out)
+    assert len(table) == 19
+    assert "Fehler" not in table or table["Fehler"].isna().all()
+    assert (table["Trades"] > 0).all()
+    assert table["Ø R"].abs().max() < 5
+    assert "Basis (wie Live-Bot)" in capsys.readouterr().out
+
+
+def test_robustness_baseline_equals_backtest(frame):
+    """Die Basis-Variante rechnet in R genau wie der normale Backtest."""
+    from dataclasses import replace
+    from robustness import TEST_OVERRIDES, run_trades
+    _, bt = run_engine(frame)
+    cfg = replace(CONFIG, **TEST_OVERRIDES)
+    rob = run_trades(frame, cfg)
+    # R hängt nicht von der Positionsgröße ab: gleiche Trades -> gleiches R
+    bt_r = {t.entry_time: t.r for t in bt}
+    rob_r = {t.entry_time: t.r for t in rob}
+    common = set(bt_r) & set(rob_r)
+    assert len(common) >= 0.9 * len(bt)
+    for k in common:
+        assert rob_r[k] == pytest.approx(bt_r[k], rel=1e-6, abs=1e-9)
+
+
+def test_delay_entry_shifts_signals(frame):
+    from robustness import delay_entry
+    d = delay_entry(frame)
+    assert (d["long_trig"].iloc[1:].to_numpy() == frame["long_trig"].iloc[:-1].to_numpy()).all()
+    assert not d["long_trig"].iloc[0]
