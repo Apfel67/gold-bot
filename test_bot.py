@@ -303,3 +303,60 @@ def test_delay_entry_shifts_signals(frame):
     d = delay_entry(frame)
     assert (d["long_trig"].iloc[1:].to_numpy() == frame["long_trig"].iloc[:-1].to_numpy()).all()
     assert not d["long_trig"].iloc[0]
+
+
+# ───────────────────────── Alte Gold-Daten (history) ─────────────────────────
+
+def make_history(start="2009-01-01", years=3, seed=11):
+    n = int(years * 365 * 24)
+    h = make_market(n, seed=seed)
+    h.index = pd.date_range(start, periods=n, freq="h", tz="UTC")
+    h[["open", "high", "low", "close"]] -= 2700          # Preisniveau um 1.300 USD
+    # Wochenend-Kerzen ohne Handel wie bei Dukascopy
+    weekend = h.index.dayofweek >= 5
+    for col in ["open", "high", "low"]:
+        h.loc[weekend, col] = h.loc[weekend, "close"]
+    h.loc[weekend, "volume"] = 0.0
+    return h
+
+
+def test_clean_history_drops_flat_bars_and_checks_prices():
+    from history import clean_history
+    h = make_history(years=1)
+    cleaned = clean_history(h)
+    assert (cleaned.index.dayofweek < 5).all()
+    bad = h.copy()
+    bad[["open", "high", "low", "close"]] *= 1000       # falsches Preisformat
+    with pytest.raises(RuntimeError, match="Preisformat"):
+        clean_history(bad)
+
+
+def test_history_mode(tmp_path, monkeypatch, capsys):
+    import history
+    from history import clean_history
+
+    calls = {}
+
+    def fake_load(start, end):
+        calls["range"] = (start, end)
+        return clean_history(make_history())
+
+    monkeypatch.setattr(history, "load_dukascopy", fake_load)
+    out = tmp_path / "hist"
+    assert bot.main(["--history", "--von", "2010", "--bis", "2011", "--out", str(out)]) == 0
+    assert calls["range"][0].year == 2009 and calls["range"][1].year == 2012
+
+    years = pd.read_csv(out / "jahre.csv")
+    assert set(years["Jahr"]) <= {2010, 2011} and len(years) >= 1
+    variants = pd.read_csv(out / "varianten.csv")
+    assert len(variants) == 13 and (variants["Trades"] > 0).all()
+    trades = pd.read_csv(out / "trades.csv")
+    assert (pd.to_datetime(trades["entry_time"], utc=True) >= pd.Timestamp("2010-01-01", tz="UTC")).all()
+    assert len(trades) == variants.loc[0, "Trades"]
+    assert "Ergebnis je Jahr" in capsys.readouterr().out
+
+
+def test_year_range_validation():
+    from history import year_range
+    with pytest.raises(ValueError):
+        year_range(2020, 2015)

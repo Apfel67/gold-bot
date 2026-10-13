@@ -7,6 +7,7 @@ Aufrufe:
     python bot.py --resume        Pause aufheben (nach Unterschreiten der Grenze)
     python bot.py --backtest      dieselbe Engine über die ganze Historie laufen lassen
     python bot.py --robustness    Backtest mit veränderten Kosten, Parametern, anderen Märkten
+    python bot.py --history --von 2010 --bis 2023   Test mit alten Gold-Daten (Dukascopy)
 
 Offline mit eigenen Daten (z. B. TradingView-Export):
     python bot.py --backtest --h1-csv stunden.csv [--d1-csv tage.csv]
@@ -209,10 +210,39 @@ def run_robustness_mode(cfg: Config, args) -> int:
     return 0
 
 
+def run_history_mode(cfg: Config, args) -> int:
+    from history import format_yearly, load_dukascopy, run_history, year_range
+    from robustness import format_table
+
+    fetch_start, test_start, end = year_range(args.von, args.bis)
+    print(f"Lade XAU/USD-Stundenkerzen von Dukascopy ({fetch_start:%Y} bis {args.bis}) ...")
+    h1 = load_dukascopy(fetch_start, end)
+    print(f"{len(h1)} Kerzen geladen: {h1.index[0]} bis {h1.index[-1]}")
+
+    years, variants, trades = run_history(cfg, h1, test_start)
+    print(f"\nErgebnis je Jahr (Basis-Einstellungen, {args.von}-{args.bis}):\n")
+    print(format_yearly(years))
+    print("\nVarianten auf denselben alten Daten:\n")
+    print(format_table(variants) + "\n")
+
+    out = Path(args.out or "history")
+    out.mkdir(exist_ok=True)
+    years.to_csv(out / "jahre.csv", index=False)
+    variants.to_csv(out / "varianten.csv", index=False)
+    if out.joinpath("trades.csv").exists():
+        out.joinpath("trades.csv").unlink()
+    append_journal(trades, out / "trades.csv")
+    print(f"Ergebnisse gespeichert im Ordner {out}/")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--backtest", action="store_true")
     ap.add_argument("--robustness", action="store_true")
+    ap.add_argument("--history", action="store_true", help="Test mit alten Gold-Daten (Dukascopy)")
+    ap.add_argument("--von", type=int, default=2010, help="erstes Testjahr für --history")
+    ap.add_argument("--bis", type=int, default=2023, help="letztes Testjahr für --history")
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--test-push", action="store_true")
@@ -227,12 +257,14 @@ def main(argv=None) -> int:
         return 0 if ok else 1
 
     try:
+        if args.history:
+            return run_history_mode(cfg, args)
         if args.robustness:
             return run_robustness_mode(cfg, args)
         return run_backtest(cfg, args) if args.backtest else run_live(cfg, args)
     except Exception as e:
         traceback.print_exc()
-        if not (args.backtest or args.robustness):
+        if not (args.backtest or args.robustness or args.history):
             state = load_state()
             last = state.get("last_error_push")
             now = pd.Timestamp.now(tz="UTC")
