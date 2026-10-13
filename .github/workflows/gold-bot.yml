@@ -15,21 +15,27 @@ on:
         description: "Was soll der Bot tun?"
         type: choice
         default: run
-        options: [run, status, test-push, resume, backtest, robustness]
+        options: [run, status, test-push, resume, backtest, robustness, history]
+      von:
+        description: "Nur für history: erstes Testjahr"
+        default: "2010"
+      bis:
+        description: "Nur für history: letztes Testjahr"
+        default: "2023"
 
 permissions:
   contents: write
 
-# Analysen (backtest, robustness) ändern den Zustand nicht und blockieren
+# Analysen (backtest, robustness, history) ändern den Zustand nicht und blockieren
 # deshalb den Live-Bot nicht.
 concurrency:
-  group: ${{ contains(fromJSON('["backtest","robustness"]'), github.event.inputs.mode) && 'gold-bot-analyse' || 'gold-bot-live' }}
+  group: ${{ contains(fromJSON('["backtest","robustness","history"]'), github.event.inputs.mode) && 'gold-bot-analyse' || 'gold-bot-live' }}
   cancel-in-progress: false
 
 jobs:
   bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
 
@@ -44,6 +50,8 @@ jobs:
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           MODE: ${{ github.event.inputs.mode || 'run' }}
+          VON: ${{ github.event.inputs.von || '2010' }}
+          BIS: ${{ github.event.inputs.bis || '2023' }}
         run: |
           case "$MODE" in
             run)       python bot.py ;;
@@ -52,6 +60,7 @@ jobs:
             resume)    python bot.py --resume ;;
             backtest)  python bot.py --backtest --out backtest_trades.csv ;;
             robustness) python bot.py --robustness --out robustness.csv ;;
+            history)   python bot.py --history --von "$VON" --bis "$BIS" --out history ;;
           esac
 
       - name: Backtest-Ergebnis bereitstellen
@@ -68,8 +77,15 @@ jobs:
           name: robustness
           path: robustness.csv
 
+      - name: Ergebnisse mit alten Daten bereitstellen
+        if: github.event.inputs.mode == 'history'
+        uses: actions/upload-artifact@v6
+        with:
+          name: history
+          path: history/
+
       - name: Zustand speichern
-        if: always() && !contains(fromJSON('["backtest","robustness"]'), github.event.inputs.mode)
+        if: always() && !contains(fromJSON('["backtest","robustness","history"]'), github.event.inputs.mode)
         run: |
           git config user.name "gold-bot"
           git config user.email "gold-bot@users.noreply.github.com"
