@@ -5,7 +5,7 @@
 # Stunde machen den Bot robust. Läufe ohne neue Kerze tun nichts und
 # ändern den Zustand nicht.
 name: gold-bot
- 
+
 on:
   schedule:
     - cron: "11,26,41,56 * * * 0-5"
@@ -15,29 +15,31 @@ on:
         description: "Was soll der Bot tun?"
         type: choice
         default: run
-        options: [run, status, test-push, resume, backtest]
- 
+        options: [run, status, test-push, resume, backtest, robustness]
+
 permissions:
   contents: write
- 
+
+# Analysen (backtest, robustness) ändern den Zustand nicht und blockieren
+# deshalb den Live-Bot nicht.
 concurrency:
-  group: gold-bot
+  group: ${{ contains(fromJSON('["backtest","robustness"]'), github.event.inputs.mode) && 'gold-bot-analyse' || 'gold-bot-live' }}
   cancel-in-progress: false
- 
+
 jobs:
   bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
- 
+
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
- 
+
       - run: pip install -r requirements.txt
- 
+
       - name: Bot ausführen
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
@@ -49,17 +51,25 @@ jobs:
             test-push) python bot.py --test-push ;;
             resume)    python bot.py --resume ;;
             backtest)  python bot.py --backtest --out backtest_trades.csv ;;
+            robustness) python bot.py --robustness --out robustness.csv ;;
           esac
- 
+
       - name: Backtest-Ergebnis bereitstellen
         if: github.event.inputs.mode == 'backtest'
         uses: actions/upload-artifact@v6
         with:
           name: backtest_trades
           path: backtest_trades.csv
- 
+
+      - name: Robustheits-Tabelle bereitstellen
+        if: github.event.inputs.mode == 'robustness'
+        uses: actions/upload-artifact@v6
+        with:
+          name: robustness
+          path: robustness.csv
+
       - name: Zustand speichern
-        if: always()
+        if: always() && !contains(fromJSON('["backtest","robustness"]'), github.event.inputs.mode)
         run: |
           git config user.name "gold-bot"
           git config user.email "gold-bot@users.noreply.github.com"
@@ -67,4 +77,3 @@ jobs:
           if git diff --cached --quiet; then exit 0; fi
           git commit -m "Bot-Lauf $(date -u +%Y-%m-%dT%H:%MZ)"
           git push
- 
