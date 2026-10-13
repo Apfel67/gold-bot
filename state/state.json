@@ -1,12 +1,12 @@
 {
-  "last_bar": "2026-10-12T15:00:00-04:00",
+  "last_bar": "2026-10-12T21:00:00-04:00",
   "broker": {
     "balance": 575.0,
     "position": null,
-    "eurusd": 1.1158223152160645
+    "eurusd": 1.117193579673767
   },
   "engine": {
-    "day": "2026-10-12",
+    "day": "2026-10-13",
     "losses_today": 0,
     "paused": false,
     "trades": 0,
