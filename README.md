@@ -66,6 +66,7 @@ geschrieben, die `Broker` umsetzt. Strategie und Engine bleiben unverändert.
 | `test-push` | Testnachricht |
 | `resume` | Pause nach Unterschreiten der 400-€-Grenze aufheben |
 | `backtest` | Engine über ca. 2 Jahre Stundendaten; Trades als Download |
+| `robustness` | Backtest mit höheren Kosten, veränderten Parametern und auf 6 anderen Märkten; Tabelle als Download |
 
 Zustand und Trade-Journal liegen in `state/state.json` und `state/journal.csv`.
 
