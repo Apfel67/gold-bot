@@ -10,19 +10,19 @@ vorerst nur auf einem **Papierkonto mit Spielgeld**.
   max. 2 Verlusttrades pro Tag, Pause unter 400 €
 - **Kosten im Papierkonto:** Spread, Kurslücken beim Stop, Übernacht-Finanzierung
 - **Benachrichtigung:** Push aufs Handy über [ntfy](https://ntfy.sh)
-- **Betrieb:** stündlich und kostenlos über GitHub Actions
+- **Betrieb:** stündlich über GitHub Actions
 
-> Kein Anlagerat. Der Bot ist ein Lern- und Portfolio-Projekt.
+**Lern- und Portfolio-Projekt!!!!**
 
 ## Aufbau
 
 | Datei | Aufgabe |
 |---|---|
-| `indicators.py` | Exakte Python-Portierung beider TradingView-Indikatoren |
+| `indicators.py` | Python-Portierung beider TradingView-Indikatoren |
 | `strategy.py` | Tagesfilter und Signale – identisch zum Pine-Skript, ohne Blick in die Zukunft |
-| `broker.py` | Konto-Schnittstelle `Broker` und das Papierkonto `PaperBroker` |
-| `engine.py` | Checkliste Kerze für Kerze: Stop, Ausstieg, Einstieg, Positionsgröße, Regeln |
-| `bot.py` | Hauptprogramm: Daten laden, neue Kerzen verarbeiten, Zustand speichern, Push |
+| `broker.py` | Schnittstelle `Broker` und das Papierkonto `PaperBroker` |
+| `engine.py` | Checkliste Kerze für Kerze: Stop, Exit, Entry, Positionsgröße, Regeln |
+| `bot.py` | MainFile: Daten laden, neue Kerzen verarbeiten, Zustand speichern, Push |
 | `data.py` | Kursdaten von Yahoo Finance (Gold-Futures GC=F) oder aus CSV |
 | `notifier.py` | Push-Nachrichten über ntfy |
 | `config.py` | Alle Einstellungen an einer Stelle |
@@ -50,7 +50,7 @@ geschrieben, die `Broker` umsetzt. Strategie und Engine bleiben unverändert.
    und diese README hochladen.
 2. `gold-bot.yml` und `tests.yml` in den Ordner `.github/workflows/` legen.
 3. Unter **Settings → Secrets and variables → Actions** ein Secret
-   `NTFY_TOPIC` mit deinem Themennamen anlegen.
+   `NTFY_TOPIC` mit Themennamen anlegen.
 4. Unter **Actions → gold-bot → Run workflow** einmal `test-push` starten,
    dann einmal `run`. Der erste Lauf meldet „Gold-Bot gestartet“; ab der
    nächsten Stunde handelt er.
@@ -71,22 +71,13 @@ geschrieben, die `Broker` umsetzt. Strategie und Engine bleiben unverändert.
 
 Zustand und Trade-Journal liegen in `state/state.json` und `state/journal.csv`.
 
-Lokal:
-
-```bash
-pip install -r requirements.txt pytest
-python -m pytest -q          # Tests
-python bot.py --backtest     # Backtest mit Yahoo-Daten
-python bot.py --backtest --h1-csv stunden.csv   # mit eigenen Daten
-```
-
 ## Grenzen
 
 - Yahoo liefert Gold-**Futures**, nicht den Spotkurs von FOREX.com im
   TradingView-Chart. Signale können sich daher um eine Kerze verschieben.
 - GitHub startet geplante Läufe oft einige Minuten verspätet.
 - Das Papierkonto schätzt die Ausführung. Echte Fills, Slippage und
-  Finanzierungssätze kommen erst mit einem Demokonto beim Broker.
+  Finanzierungssätze werden nicht mit eingerechnet
 
 ## Lizenz
 
