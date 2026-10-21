@@ -1,0 +1,2 @@
+side_name,side,qty,entry_time,entry_price,exit_time,exit_price,reason,pnl_eur,r,financing_eur,balance_after
+SHORT,-1,0.74,2026-10-20T19:00:00-04:00,4133.0998046875,2026-10-21T07:00:00-04:00,4158.9001953125,SHA grün,-16.995956905044753,-0.59148499767714,0.0,558.0040430949553
