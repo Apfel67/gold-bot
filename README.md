@@ -12,7 +12,7 @@ vorerst nur auf einem **Papierkonto mit Spielgeld**.
 - **Benachrichtigung:** Push aufs Handy über [ntfy](https://ntfy.sh)
 - **Betrieb:** stündlich über GitHub Actions
 
-**Portfolio-Projekt!!!!**
+**Lern-Projekt!!!!**
 
 ## Aufbau
 
