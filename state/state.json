@@ -1,28 +1,18 @@
 {
-  "last_bar": "2026-11-16T21:00:00-05:00",
+  "last_bar": "2026-11-16T22:00:00-05:00",
   "broker": {
-    "balance": 689.854146,
-    "position": {
-      "side": -1,
-      "qty": 1.11,
-      "entry_price": 3860.3,
-      "stop": 3894.60009765625,
-      "entry_time": "2026-11-16T12:00:00-05:00",
-      "risk_eur": 34.383946906850376,
-      "stop_dist": 34.10009765625,
-      "financing_eur": 0.6402248626380266,
-      "financed_until": "2026-11-17"
-    },
-    "eurusd": 1.100594401359558
+    "balance": 674.327666,
+    "position": null,
+    "eurusd": 1.1009578704833984
   },
   "engine": {
     "day": "2026-11-17",
-    "losses_today": 0,
+    "losses_today": 1,
     "paused": false,
-    "trades": 8,
+    "trades": 9,
     "wins": 4,
-    "sum_r": 4.253299669316923,
-    "loss_streak": 0,
+    "sum_r": 3.783117913212545,
+    "loss_streak": 1,
     "max_streak": 2,
     "min_balance": 558.0040430949553
   },
